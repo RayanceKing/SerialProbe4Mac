@@ -6,14 +6,13 @@
 //
 
 import SwiftUI
+import AppKit
 import UniformTypeIdentifiers
 
 @MainActor
 struct ContentView: View {
     @StateObject private var workspace: SerialWorkspace
     @State private var isInspectorPresented = true
-    @State private var isExportingLog = false
-    @State private var exportDocument = SerialLogDocument(text: "")
     @State private var exportError: String?
 
     init() {
@@ -37,33 +36,42 @@ struct ContentView: View {
         }
         .navigationSplitViewStyle(.balanced)
         .background {
-            LinearGradient(
-                colors: [
-                    Color(nsColor: .windowBackgroundColor),
-                    Color(nsColor: .underPageBackgroundColor)
-                ],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-            .ignoresSafeArea()
+            Color(nsColor: .windowBackgroundColor)
         }
         .toolbar {
             ToolbarItemGroup(placement: .navigation) {
-                Picker("串口", selection: selectedPortBinding) {
+                Menu {
                     if workspace.availablePorts.isEmpty {
-                        Text("未检测到设备").tag("")
+                        Text("未检测到设备")
                     } else {
                         ForEach(workspace.availablePorts) { port in
-                            Text(port.displayName).tag(port.path)
+                            Button {
+                                selectedPortBinding.wrappedValue = port.path
+                            } label: {
+                                if selectedPortBinding.wrappedValue == port.path {
+                                    Label(port.displayName, systemImage: "checkmark")
+                                } else {
+                                    Text(port.displayName)
+                                }
+                            }
                         }
                     }
+                } label: {
+                    Text(selectedPortTitle)
+                        .lineLimit(1)
+                        .frame(width: 220, alignment: .leading)
                 }
-                .frame(width: 220)
 
                 Menu {
                     ForEach(SerialBaudRate.presets) { option in
-                        Button(option.label) {
+                        Button {
                             workspace.baudRate = option.rawValue
+                        } label: {
+                            if workspace.baudRate == option.rawValue {
+                                Label(option.label, systemImage: "checkmark")
+                            } else {
+                                Text(option.label)
+                            }
                         }
                     }
                 } label: {
@@ -94,12 +102,11 @@ struct ContentView: View {
                 .keyboardShortcut("k", modifiers: [.command])
 
                 Button {
-                    exportDocument = SerialLogDocument(text: workspace.exportedLog)
-                    isExportingLog = true
+                    exportSnapshotToFile()
                 } label: {
                     Label("导出", systemImage: "square.and.arrow.up")
                 }
-                .keyboardShortcut("s", modifiers: [.command])
+                .keyboardShortcut("s", modifiers: [.command, .shift])
 
             }
 
@@ -109,17 +116,6 @@ struct ContentView: View {
                 } label: {
                     Label(isInspectorPresented ? "隐藏面板" : "显示面板", systemImage: "sidebar.right")
                 }
-            }
-        }
-        .fileExporter(
-            isPresented: $isExportingLog,
-            document: exportDocument,
-            contentType: .plainText,
-            defaultFilename: workspace.exportFilename
-        ) { result in
-            if case .failure(let error) = result {
-                exportError = error.localizedDescription
-                workspace.appendSystemMessage("日志导出失败：\(error.localizedDescription)")
             }
         }
         .alert("导出失败", isPresented: exportAlertBinding) {
@@ -146,6 +142,45 @@ struct ContentView: View {
         )
     }
 
+    private var selectedPortTitle: String {
+        guard
+            let selectedPortPath = workspace.selectedPortPath,
+            let selectedPort = workspace.availablePorts.first(where: { $0.path == selectedPortPath })
+        else {
+            return "未检测到设备"
+        }
+
+        return selectedPort.displayName
+    }
+
+    private var exportSnapshotText: String {
+        let receiveLines = workspace.logEntries
+            .filter { $0.direction == .rx }
+            .map(\.exportLine)
+        let sendLines = workspace.logEntries
+            .filter { $0.direction == .tx }
+            .map(\.exportLine)
+
+        let receiveSection = """
+        === 接收区 ===
+        设备：\(selectedPortTitle)
+        波特率：\(workspace.baudRate)
+        数据条目：\(receiveLines.count)
+        \(receiveLines.isEmpty ? "(无接收数据)" : receiveLines.joined(separator: "\n"))
+        """
+
+        let sendSection = """
+        === 发送区 ===
+        发送模式：\(workspace.payloadMode.label)
+        换行：\(workspace.lineEnding.label)
+        当前输入：\(workspace.composerText.isEmpty ? "(空)" : workspace.composerText)
+        历史发送条目：\(sendLines.count)
+        \(sendLines.isEmpty ? "(无发送记录)" : sendLines.joined(separator: "\n"))
+        """
+
+        return [receiveSection, sendSection].joined(separator: "\n\n")
+    }
+
     private var exportAlertBinding: Binding<Bool> {
         Binding(
             get: { exportError != nil },
@@ -156,4 +191,43 @@ struct ContentView: View {
             }
         )
     }
+
+    @MainActor
+    private func exportSnapshotToFile() {
+        if !Thread.isMainThread {
+            DispatchQueue.main.async {
+                exportSnapshotToFile()
+            }
+            return
+        }
+
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "serialprobe-snapshot-\(Int(Date().timeIntervalSince1970)).txt"
+        if #available(macOS 12.0, *) {
+            panel.allowedContentTypes = [.plainText]
+        } else {
+            panel.allowedFileTypes = ["txt"]
+        }
+        panel.canCreateDirectories = true
+        panel.isExtensionHidden = false
+
+        let handleSelection: (NSApplication.ModalResponse) -> Void = { response in
+            guard response == .OK, let url = panel.url else {
+                return
+            }
+
+            do {
+                try exportSnapshotText.write(to: url, atomically: true, encoding: .utf8)
+            } catch {
+                exportError = error.localizedDescription
+            }
+        }
+
+        if let window = NSApp.keyWindow ?? NSApp.mainWindow {
+            panel.beginSheetModal(for: window, completionHandler: handleSelection)
+        } else {
+            panel.begin(completionHandler: handleSelection)
+        }
+    }
+
 }

@@ -104,9 +104,7 @@ final class SerialWorkspace: ObservableObject {
 
     var exportFilename: String {
         let name = selectedPort?.displayName.replacingOccurrences(of: ".", with: "-") ?? "session"
-        let stamp = Date().formatted(.dateTime.year().month().day().hour().minute())
-            .replacingOccurrences(of: " ", with: "-")
-            .replacingOccurrences(of: ":", with: "-")
+        let stamp = Self.exportFilenameDateFormatter.string(from: Date())
         return "\(name)-\(stamp)"
     }
 
@@ -117,6 +115,13 @@ final class SerialWorkspace: ObservableObject {
     private var selectedPort: SerialPortDescriptor? {
         availablePorts.first(where: { $0.path == selectedPortPath })
     }
+
+    private static let exportFilenameDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd-HH-mm"
+        return formatter
+    }()
 
     func startPortMonitoring() {
         guard monitorTask == nil else { return }
@@ -230,6 +235,9 @@ final class SerialWorkspace: ObservableObject {
 
     func clearLogs() {
         logEntries.removeAll()
+        rxByteCount = 0
+        txByteCount = 0
+        errorCount = 0
         appendSystemMessage("终端缓存已清空。")
     }
 
@@ -424,12 +432,19 @@ struct SerialLogEntry: Identifiable, Hashable {
     let byteCount: Int
 
     var exportLine: String {
-        let stamp = timestamp.formatted(date: .omitted, time: .standard)
+        let stamp = Self.exportTimeFormatter.string(from: timestamp)
         if hexRepresentation.isEmpty {
             return "[\(stamp)] [\(direction.badgeTitle)] \(textRepresentation)"
         }
         return "[\(stamp)] [\(direction.badgeTitle)] \(textRepresentation) | \(hexRepresentation)"
     }
+
+    private static let exportTimeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "HH:mm:ss"
+        return formatter
+    }()
 }
 
 enum SerialDirection: Hashable {
