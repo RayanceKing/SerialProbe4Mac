@@ -48,7 +48,7 @@ struct ContentView: View {
             .ignoresSafeArea()
         }
         .toolbar {
-            ToolbarItemGroup(placement: .primaryAction) {
+            ToolbarItemGroup(placement: .navigation) {
                 Picker("串口", selection: selectedPortBinding) {
                     if workspace.availablePorts.isEmpty {
                         Text("未检测到设备").tag("")
@@ -101,6 +101,9 @@ struct ContentView: View {
                 }
                 .keyboardShortcut("s", modifiers: [.command])
 
+            }
+
+            ToolbarItem(placement: .primaryAction) {
                 Button {
                     isInspectorPresented.toggle()
                 } label: {
