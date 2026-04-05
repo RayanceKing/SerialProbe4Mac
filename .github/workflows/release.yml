@@ -3,7 +3,7 @@ name: Build, Sign, Notarize & Release SerialProbe
 on:
   push:
     tags:
-      - 'v*'          # 推送 v1.0.0 等 tag 时自动触发
+      - 'v*'
 
 jobs:
   build:
@@ -21,35 +21,47 @@ jobs:
           p12-file-base64: ${{ secrets.APPLE_CERTIFICATE }}
           p12-password: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
 
-      - name: Archive SerialProbe
+      - name: Get Signing Identity
+        id: signing
+        run: |
+          IDENTITY=$(security find-identity -v -p codesigning | grep "Developer ID Application" | head -n 1 | awk -F'"' '{print $2}')
+          echo "identity=$IDENTITY" >> $GITHUB_OUTPUT
+          echo "✅ 使用签名身份: $IDENTITY"
+
+      - name: Archive SerialProbe (强制 Developer ID 签名)
         run: |
           xcodebuild archive \
             -project SerialProbe.xcodeproj \
             -scheme SerialProbe \
             -configuration Release \
             -archivePath ./build/SerialProbe.xcarchive \
-            -destination 'platform=macOS'
+            -destination 'generic/platform=macOS' \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY="${{ steps.signing.outputs.identity }}" \
+            CODE_SIGNING_REQUIRED=YES \
+            CODE_SIGNING_ALLOWED=YES \
+            DEVELOPMENT_TEAM="H2NS3XTS96"
 
       - name: Export .app (Developer ID)
         run: |
           xcodebuild -exportArchive \
             -archivePath ./build/SerialProbe.xcarchive \
             -exportOptionsPlist ExportOptions.plist \
-            -exportPath ./dist
+            -exportPath ./dist \
+            -allowProvisioningUpdates
 
       - name: Verify exported app
         run: |
           ls -lh ./dist
           codesign -dv --verbose=4 ./dist/SerialProbe.app
 
-      - name: Install create-dmg tool
+      - name: Install create-dmg
         run: brew install create-dmg
 
-      - name: Create beautiful DMG
+      - name: Create DMG
         run: |
           create-dmg \
             --volname "SerialProbe" \
-            --volicon "SerialProbe/Assets.xcassets/AppIcon.appiconset/icon_512x512.png" \   # 可选：替换为你的图标路径
             --window-pos 200 120 \
             --window-size 800 500 \
             --text-size 16 \
@@ -58,16 +70,14 @@ jobs:
             --hide-extension "SerialProbe.app" \
             --app-drop-link 520 220 \
             --no-internet-enable \
-            --hdiutil-verbose \
             "./dist/SerialProbe.dmg" \
             "./dist/SerialProbe.app"
 
-      - name: Codesign the DMG (optional but recommended)
+      - name: Codesign DMG
         run: |
-          IDENTITY=$(security find-identity -v -p codesigning | grep "Developer ID Application" | head -n 1 | awk -F'"' '{print $2}')
-          codesign --force --sign "$IDENTITY" "./dist/SerialProbe.dmg"
+          codesign --force --sign "${{ steps.signing.outputs.identity }}" "./dist/SerialProbe.dmg"
 
-      - name: Notarize DMG with App Store Connect API Key
+      - name: Notarize DMG with API Key
         run: |
           echo "${{ secrets.APPLE_API_KEY }}" | base64 --decode > $RUNNER_TEMP/AuthKey.p8
           chmod 600 $RUNNER_TEMP/AuthKey.p8
@@ -80,17 +90,15 @@ jobs:
 
           rm -f $RUNNER_TEMP/AuthKey.p8
 
-      - name: Staple ticket to DMG
+      - name: Staple ticket
         run: |
           xcrun stapler staple "./dist/SerialProbe.dmg"
-          echo "✅ SerialProbe.dmg 已完成公证并附加票据"
+          echo "✅ 公证完成并附加票据"
 
-      - name: Create GitHub Release and Upload
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: ./dist/SerialProbe.dmg
           tag_name: ${{ github.ref_name }}
           name: SerialProbe ${{ github.ref_name }}
-          draft: false
-          prerelease: false
           generate_release_notes: true
