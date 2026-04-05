@@ -1,15 +1,15 @@
-name: Build, Notarize, Package DMG & Release
+name: Build, Sign, Notarize & Release SerialProbe
 
 on:
   push:
     tags:
-      - 'v*'          # 仅在打 tag（如 v1.0.0）时触发
+      - 'v*'          # 推送 v1.0.0 等 tag 时自动触发
 
 jobs:
   build:
     runs-on: macos-latest
     permissions:
-      contents: write   # 必须，用于创建 Release 和上传文件
+      contents: write
 
     steps:
       - name: Checkout code
@@ -21,75 +21,76 @@ jobs:
           p12-file-base64: ${{ secrets.APPLE_CERTIFICATE }}
           p12-password: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
 
-      - name: Get Signing Identity
-        id: get-identity
+      - name: Archive SerialProbe
+        run: |
+          xcodebuild archive \
+            -project SerialProbe.xcodeproj \
+            -scheme SerialProbe \
+            -configuration Release \
+            -archivePath ./build/SerialProbe.xcarchive \
+            -destination 'platform=macOS'
+
+      - name: Export .app (Developer ID)
+        run: |
+          xcodebuild -exportArchive \
+            -archivePath ./build/SerialProbe.xcarchive \
+            -exportOptionsPlist ExportOptions.plist \
+            -exportPath ./dist
+
+      - name: Verify exported app
+        run: |
+          ls -lh ./dist
+          codesign -dv --verbose=4 ./dist/SerialProbe.app
+
+      - name: Install create-dmg tool
+        run: brew install create-dmg
+
+      - name: Create beautiful DMG
+        run: |
+          create-dmg \
+            --volname "SerialProbe" \
+            --volicon "SerialProbe/Assets.xcassets/AppIcon.appiconset/icon_512x512.png" \   # 可选：替换为你的图标路径
+            --window-pos 200 120 \
+            --window-size 800 500 \
+            --text-size 16 \
+            --icon-size 128 \
+            --icon "SerialProbe.app" 280 220 \
+            --hide-extension "SerialProbe.app" \
+            --app-drop-link 520 220 \
+            --no-internet-enable \
+            --hdiutil-verbose \
+            "./dist/SerialProbe.dmg" \
+            "./dist/SerialProbe.app"
+
+      - name: Codesign the DMG (optional but recommended)
         run: |
           IDENTITY=$(security find-identity -v -p codesigning | grep "Developer ID Application" | head -n 1 | awk -F'"' '{print $2}')
-          echo "identity=$IDENTITY" >> $GITHUB_OUTPUT
-          echo "✅ 使用签名身份: $IDENTITY"
-
-      - name: Build Your App
-        run: |
-          # ==================== 【在这里替换为你的实际构建命令】 ====================
-          # 示例 1：Xcode 项目
-          # xcodebuild -project YourProject.xcodeproj -scheme YourScheme -configuration Release -archivePath build/YourApp.xcarchive archive
-          # xcodebuild -exportArchive -archivePath build/YourApp.xcarchive -exportOptionsPlist ExportOptions.plist -exportPath dist/
-          
-          # 示例 2：Swift Package / 命令行工具
-          # swift build -c release --product YourApp
-          # mkdir -p dist && cp .build/release/YourApp dist/YourApp.app
-          
-          # 示例 3：其他框架（Electron/Tauri/Rust 等）
-          # npm run build:mac
-          
-          # 构建完成后确保 .app 位于 dist/YourApp.app（请自行调整路径）
-          echo "✅ 构建完成，.app 路径请确认：dist/YourApp.app"
-          # =========================================================================
-
-      - name: Codesign the .app (启用 Hardened Runtime)
-        run: |
-          codesign --force --deep --options runtime --sign "${{ steps.get-identity.outputs.identity }}" dist/YourApp.app
-
-      - name: Package to DMG (使用 hdiutil，原生无需额外安装)
-        run: |
-          mkdir -p dist
-          hdiutil create -volname "YourApp" \
-                         -srcfolder dist/YourApp.app \
-                         -ov -format UDZO dist/YourApp.dmg
-
-      - name: Codesign the .dmg
-        run: |
-          codesign --force --sign "${{ steps.get-identity.outputs.identity }}" dist/YourApp.dmg
+          codesign --force --sign "$IDENTITY" "./dist/SerialProbe.dmg"
 
       - name: Notarize DMG with App Store Connect API Key
         run: |
-          # 写入临时 p8 文件（安全）
           echo "${{ secrets.APPLE_API_KEY }}" | base64 --decode > $RUNNER_TEMP/AuthKey.p8
           chmod 600 $RUNNER_TEMP/AuthKey.p8
 
-          # 直接提交 .dmg 公证（无需 zip）
-          xcrun notarytool submit dist/YourApp.dmg \
+          xcrun notarytool submit "./dist/SerialProbe.dmg" \
             --key "$RUNNER_TEMP/AuthKey.p8" \
             --key-id "${{ secrets.APPLE_API_KEY_ID }}" \
             --issuer "${{ secrets.APPLE_API_ISSUER }}" \
             --wait
 
-          rm $RUNNER_TEMP/AuthKey.p8
+          rm -f $RUNNER_TEMP/AuthKey.p8
 
-      - name: Staple the ticket to DMG
+      - name: Staple ticket to DMG
         run: |
-          xcrun stapler staple dist/YourApp.dmg
-          echo "✅ DMG 已完成公证 + 附加票据"
+          xcrun stapler staple "./dist/SerialProbe.dmg"
+          echo "✅ SerialProbe.dmg 已完成公证并附加票据"
 
-      - name: Create GitHub Release & Upload Assets
+      - name: Create GitHub Release and Upload
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            dist/YourApp.dmg
-            # 如果还想同时上传 .app，可取消下面注释：
-            # dist/YourApp.app
+          files: ./dist/SerialProbe.dmg
           tag_name: ${{ github.ref_name }}
-          name: Release ${{ github.ref_name }}
+          name: SerialProbe ${{ github.ref_name }}
           draft: false
           prerelease: false
           generate_release_notes: true
